@@ -647,10 +647,22 @@ def do_run(keep=False):
     # Everything above ran in a session install.sh had just started the units in.
     # Autostart is a different path entirely, and it is the one a real user hits.
     log("rebooting to verify autostart")
+    # Wait on the boot id, not on ssh: sshd stays up for a few seconds after the
+    # reboot is issued, so a plain reconnect lands on the machine that is shutting
+    # down and every check runs against the session we were trying to leave.
+    before = guest("cat /proc/sys/kernel/random/boot_id").stdout.strip()
     guest("sudo systemctl reboot")
-    time.sleep(8)
-    wait_for_ssh()
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        time.sleep(5)
+        r = guest("cat /proc/sys/kernel/random/boot_id", timeout=15)
+        if r.returncode == 0 and r.stdout.strip() and r.stdout.strip() != before:
+            log(f"  rebooted (boot id {before[:8]} -> {r.stdout.strip()[:8]})")
+            break
+    else:
+        die("guest never came back from the reboot")
     wait_for_cinnamon()
+    time.sleep(10)          # let the autostart entry run
     check("daemon comes back after a reboot", wait_daemon_ready())
     backend = guest("journalctl --user -u dictate.service -b --no-pager -o cat "
                     "| grep -m1 '^typing:'").stdout.strip()
