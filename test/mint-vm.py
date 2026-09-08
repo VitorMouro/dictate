@@ -10,11 +10,12 @@ the VM's emulated microphone is that sink's monitor, so the run is deterministic
 needs nobody at the keyboard.
 
     ./mint-vm.py --install    # one time: boot the ISO and install Mint by hand
+    ./mint-vm.py --setup      # one time: authorise the harness ssh key in the VM
     ./mint-vm.py --run        # automated end-to-end run on a fresh overlay
     ./mint-vm.py --gui        # boot the overlay in a window to poke at it yourself
     ./mint-vm.py --clean      # drop the overlay, keep the base image
 
-Requires on the host: qemu, virglrenderer, espeak-ng, ImageMagick, pipewire-pulse.
+Requires on the host: qemu, espeak-ng, ImageMagick, pipewire-pulse.
 """
 
 import argparse
@@ -134,9 +135,10 @@ def qemu_args(disk, display, cdrom=None):
         "-drive", f"file={disk},if=virtio,format=qcow2",
         "-netdev", f"user,id=n0,hostfwd=tcp::{SSH_PORT}-:22",
         "-device", "virtio-net-pci,netdev=n0",
-        # Cinnamon wants GL; virgl gives it a real host GL context with no window, so
-        # screendump still works headless.
-        "-vga", "none", "-device", "virtio-gpu-gl-pci",
+        # Deliberately NOT virtio-gpu-gl. Under virgl the framebuffer lives as a host
+        # GL texture and QMP screendump reads the emulated scanout, which stays empty -
+        # every screenshot comes back blank. Cinnamon renders fine on plain virtio-gpu.
+        "-vga", "none", "-device", "virtio-gpu-pci",
         "-audiodev", f"pipewire,id=snd0,in.name={SINK}.monitor",
         "-device", "ich9-intel-hda", "-device", "hda-micro,audiodev=snd0",
         "-qmp", f"unix:{QMP_SOCK},server,nowait",
@@ -288,6 +290,61 @@ def serve_vmdir():
 
 # ----------------------------------------------------------------------- modes ---
 
+SETUP_SH = """#!/usr/bin/env bash
+# One-time setup so the harness can drive this VM over ssh.
+set -e
+sudo apt-get update
+sudo apt-get install -y openssh-server
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+curl -fsS http://10.0.2.2:{port}/id_vm.pub >> ~/.ssh/authorized_keys
+sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+echo '{user} ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/99-vmtest >/dev/null
+sudo chmod 440 /etc/sudoers.d/99-vmtest
+sudo systemctl enable --now ssh
+echo
+echo "SETUP COMPLETE - close this window."
+"""
+
+
+def write_setup_script():
+    path = VMDIR / "setup.sh"
+    path.write_text(SETUP_SH.format(port=WEB_PORT, user=GUEST_USER))
+    return path
+
+
+def do_setup():
+    """Boot the installed base image so the one-time ssh setup can be done by hand.
+
+    The base image, not an overlay: this has to persist. apt needs the account
+    password, which the harness does not have, so a human types it once."""
+    if not BASE.exists():
+        die(f"no base image at {BASE}; run --install first")
+    ensure_key()
+    write_setup_script()
+    print(f"""
+─────────────────────────────────────────────────────────────────────────────
+  A QEMU window is opening on the installed Mint system.
+
+  1. Press Ctrl+Alt+T to open a terminal.
+  2. Run this one line:
+
+     curl -so /tmp/s.sh http://10.0.2.2:{WEB_PORT}/setup.sh && bash /tmp/s.sh
+
+     It installs openssh-server, authorises the harness key and adds a
+     passwordless-sudo drop-in. It will ask for your VM account password once.
+
+  3. When it prints SETUP COMPLETE, close the QEMU window.
+
+  Then: ./mint-vm.py --run
+─────────────────────────────────────────────────────────────────────────────
+""")
+    httpd = serve_vmdir()
+    launch(BASE, "gtk").wait()
+    httpd.shutdown()
+    log("setup window closed")
+
+
 def do_install():
     VMDIR.mkdir(parents=True, exist_ok=True)
     if not ISO.exists():
@@ -329,7 +386,7 @@ def do_install():
 """)
     httpd = serve_vmdir()
     load_sink()
-    launch(BASE, "gtk,gl=on", cdrom=ISO).wait()
+    launch(BASE, "gtk", cdrom=ISO).wait()
     httpd.shutdown()
     log("installer window closed")
 
@@ -348,9 +405,7 @@ def do_run(keep=False):
     make_sample()
     fresh_overlay()
     load_sink()
-    # egl-headless, not none: virtio-gpu-gl needs a GL-capable display backend, and
-    # this gives it a host GL context with no window so screendump still works.
-    launch(OVERLAY, "egl-headless")
+    launch(OVERLAY, "none")
     wait_for_ssh()
     wait_for_cinnamon()
 
@@ -441,7 +496,7 @@ def do_gui():
         fresh_overlay()
     make_sample()
     load_sink()
-    proc = launch(OVERLAY, "gtk,gl=on")
+    proc = launch(OVERLAY, "gtk")
     log("VM window open. Click the microphone icon in the panel to test the mouse "
         "toggle. Close the window when done.")
     log(f"To feed it speech from here: paplay --device={SINK} {SAMPLE}")
@@ -454,6 +509,8 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--install", action="store_true", help="one-time manual Mint install")
     g.add_argument("--run", action="store_true", help="automated end-to-end run")
+    g.add_argument("--setup", action="store_true",
+                   help="boot the base image to do the one-time ssh setup")
     g.add_argument("--gui", action="store_true", help="boot the overlay in a window")
     g.add_argument("--clean", action="store_true", help="drop the overlay")
     ap.add_argument("--keep", action="store_true", help="leave the VM up after --run")
@@ -463,6 +520,8 @@ def main():
     try:
         if args.install:
             do_install()
+        elif args.setup:
+            do_setup()
         elif args.gui:
             do_gui()
         elif args.clean:
