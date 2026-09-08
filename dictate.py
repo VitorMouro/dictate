@@ -53,7 +53,7 @@ CONTROL = RUNTIME / "control"
 WAYBAR_SIGNAL = 8
 
 HEADLINE = {
-    "off": "Click or SUPER+SPACE to start",
+    "off": "Click the tray icon or press your shortcut to start",
     "listening": "Waiting for speech",
     "speech": "Capturing speech",
     "transcribing": "Transcribing",

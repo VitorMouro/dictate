@@ -13,6 +13,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import gi
@@ -114,6 +115,16 @@ def main():
     if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         # Exit 0, not an error: Restart=on-failure must not spin here.
         print("no display; not starting the tray", file=sys.stderr, flush=True)
+        return
+    # Autostart can beat the display server to it by a moment. Retry rather than exit
+    # non-zero, which would otherwise log a failure on every login before recovering.
+    for attempt in range(15):
+        if Gtk.init_check()[0]:
+            break
+        time.sleep(1)
+    else:
+        print("no usable display after 15s; not starting the tray",
+              file=sys.stderr, flush=True)
         return
     Tray()
     Gtk.main()

@@ -644,6 +644,21 @@ def do_run(keep=False):
     guest("systemctl --user stop dictate.service")
     check("status file removed on exit", state() is None)
 
+    # Everything above ran in a session install.sh had just started the units in.
+    # Autostart is a different path entirely, and it is the one a real user hits.
+    log("rebooting to verify autostart")
+    guest("sudo systemctl reboot")
+    time.sleep(8)
+    wait_for_ssh()
+    wait_for_cinnamon()
+    check("daemon comes back after a reboot", wait_daemon_ready())
+    backend = guest("journalctl --user -u dictate.service -b --no-pager -o cat "
+                    "| grep -m1 '^typing:'").stdout.strip()
+    check("typing backend survives a reboot", backend == "typing: xdotool", backend)
+    tray = guest("systemctl --user is-active dictate-tray.service").stdout.strip()
+    check("tray running after a reboot", tray == "active", tray)
+    screenshot("05-after-reboot")
+
     log("")
     log("=" * 60)
     passed = sum(1 for _, ok, _ in results if ok)
