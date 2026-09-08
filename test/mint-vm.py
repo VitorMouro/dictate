@@ -149,12 +149,28 @@ def qemu_args(disk, display, cdrom=None):
     return args
 
 
+def port_in_use(port):
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 def launch(disk, display, cdrom=None):
+    """Refuses to start if the ssh port is already answering. A second VM holding it
+    made qemu die on the backing-file lock while wait_for_ssh happily connected to the
+    *other* machine - the whole run then reported PASS against the wrong guest."""
     global vm
+    if port_in_use(SSH_PORT):
+        die(f"port {SSH_PORT} is already listening - another VM is still running. "
+            f"Stop it (ssh -p {SSH_PORT} {GUEST_USER}@127.0.0.1 sudo poweroff), "
+            f"or set MINT_SSH_PORT to something else.")
     QMP_SOCK.unlink(missing_ok=True)
     args = qemu_args(disk, display, cdrom)
     log("qemu " + " ".join(args[1:]))
     vm = subprocess.Popen(args)
+    time.sleep(3)
+    if vm.poll() is not None:
+        die(f"qemu exited immediately with code {vm.returncode} - see its output above")
     return vm
 
 
@@ -252,6 +268,19 @@ def ensure_key():
                         "-C", "dictate-mint-vm"], check=True, capture_output=True)
         log(f"generated {KEY}")
     return (KEY.with_suffix(".pub")).read_text().strip()
+
+
+def wait_daemon_ready(timeout=180):
+    """uv resolves and downloads dependencies before main() runs, so the service is
+    "active" well before it has loaded a model, logged its backend or published a
+    status file. Asserting any of that earlier is a race."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if guest("journalctl --user -u dictate.service --no-pager -o cat "
+                 "| grep -qx ready && echo yes").stdout.strip() == "yes":
+            return True
+        time.sleep(2)
+    return False
 
 
 def state():
@@ -429,6 +458,7 @@ def do_run(keep=False):
 
     check("daemon active",
           guest("systemctl --user is-active dictate.service").stdout.strip() == "active")
+    check("daemon reaches ready", wait_daemon_ready())
     check("tray active",
           guest("systemctl --user is-active dictate-tray.service").stdout.strip() == "active")
 
@@ -448,7 +478,11 @@ def do_run(keep=False):
 
     log("opening a window to catch the typed text")
     guest("rm -f /tmp/typed.txt")
-    guest("nohup xterm -e sh -c 'cat > /tmp/typed.txt' >/dev/null 2>&1 &")
+    # stty -icanon: the tty line discipline buffers until a newline, and dictate types
+    # without one, so a canonical-mode terminal would hold the whole transcript and
+    # /tmp/typed.txt would stay empty.
+    guest("nohup xterm -e sh -c 'stty -icanon min 1 time 0; cat > /tmp/typed.txt' "
+          ">/dev/null 2>&1 &")
     time.sleep(3)
     focused = guest("xdotool search --class XTerm windowactivate --sync "
                     "&& xdotool getactivewindow getwindowname")
