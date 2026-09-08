@@ -47,7 +47,10 @@ SENTENCE = "the quick brown fox jumps over the lazy dog"
 # systemctl --user and the X tools need a session context that ssh does not set up.
 GUEST_ENV = ("export XDG_RUNTIME_DIR=/run/user/$(id -u); "
              "export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus; "
-             "export DISPLAY=:0; ")
+             "export DISPLAY=:0; "
+             # The astral installer puts uv here and edits shell rc files, which a
+             # non-interactive ssh command never sources.
+             'export PATH="$HOME/.local/bin:$PATH"; ')
 
 vm = None
 sink_module = None
@@ -296,6 +299,11 @@ def do_install():
      mkdir -p ~/.ssh && chmod 700 ~/.ssh
      echo '{pub}' >> ~/.ssh/authorized_keys
      chmod 600 ~/.ssh/authorized_keys
+     echo '{GUEST_USER} ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/99-vmtest
+     sudo chmod 440 /etc/sudoers.d/99-vmtest
+
+     The sudoers line matters: the run installs packages over ssh, and without it
+     apt blocks forever on a password prompt. This is a throwaway test VM.
 
   4. Close the QEMU window.
 
