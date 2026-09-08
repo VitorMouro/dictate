@@ -1,7 +1,6 @@
 [Unit]
 Description=Dictation tray indicator
-PartOf=graphical-session.target
-After=graphical-session.target dictate.service
+After=dictate.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -11,6 +10,3 @@ Type=simple
 ExecStart=/usr/bin/python3 %h/.config/dictate/tray.py
 Restart=on-failure
 RestartSec=2
-
-[Install]
-WantedBy=graphical-session.target

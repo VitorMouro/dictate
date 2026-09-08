@@ -7,6 +7,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS="${XDG_DATA_HOME:-$HOME/.local/share}/dictate/models"
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/dictate"
 UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+AUTOSTART="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
 ASR=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
 PARAKEET=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
 
@@ -68,11 +69,26 @@ ln -sfn "$REPO/tray.py"    "$CONF/tray.py"
 
 ln -sfn "$REPO/dictate.service"      "$UNITS/dictate.service"
 ln -sfn "$REPO/dictate-tray.service" "$UNITS/dictate-tray.service"
-
+ln -sfn "$REPO/session.sh"           "$CONF/session.sh"
 systemctl --user daemon-reload
-systemctl --user enable --now dictate.service
-systemctl --user enable --now dictate-tray.service
-say "services enabled"
+
+# Autostart, not `systemctl --user enable`: the user manager does not inherit DISPLAY,
+# and Cinnamon never activates graphical-session.target, so an enabled unit would start
+# at login with no session environment - the daemon would transcribe without typing and
+# the tray would never appear at all.
+mkdir -p "$AUTOSTART"
+cat > "$AUTOSTART/dictate.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Dictation
+Comment=Offline dictation daemon and tray indicator
+Exec=$CONF/session.sh
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+DESKTOP
+
+"$CONF/session.sh"
+say "services started and set to autostart"
 
 cat <<'DONE'
 
