@@ -384,22 +384,28 @@ def guest_peak(src, seconds=14):
         return 0
 
 
-def calibrate_mic(target=15000):
-    """The emulated hda-micro delivers a wildly inconsistent level: repeated captures of
-    the identical sample at identical mixer settings have measured 805, 5787, 16205 and
-    25516. It is not idle-related - inserting gaps and keeping the host sink awake made
-    no difference. So aim well above what the VAD needs and let the retry loop absorb a
-    bad draw. Real hardware needs none of this."""
+def calibrate_mic(low=8000, high=30000):
+    """Find a capture level where the guest hears the sample clearly but undistorted.
+
+    Aim for a band, not a floor. At 200% the emulated codec clips at full scale and the
+    transcript degrades ("fox" came back as "pox"), so a level that is merely loud is
+    not good enough - it makes the ASR check weaker than it looks.
+    """
     src = guest("pactl get-default-source").stdout.strip()
     guest("amixer -c0 sset Capture 100% unmute >/dev/null 2>&1 || true")
-    peak = 0
-    for vol in (200, 300, 400, 500):
+    best = (0, None)
+    for vol in (50, 100, 150, 200, 300):
         guest(f"pactl set-source-mute {src} 0; pactl set-source-volume {src} {vol}%")
         peak = guest_peak(src)
         log(f"  capture calibration: {vol}% -> peak {peak}")
-        if peak >= target:
+        if low <= peak <= high:
             return True, peak, vol
-    return False, peak, None
+        if peak > best[0] and peak <= high:
+            best = (peak, vol)
+    if best[1] is not None and best[0] >= low:
+        guest(f"pactl set-source-volume {src} {best[1]}%")
+        return True, best[0], best[1]
+    return False, best[0], None
 
 
 def serve_vmdir():
