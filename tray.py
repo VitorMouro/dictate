@@ -69,7 +69,11 @@ def read_status():
 class Tray:
     def __init__(self):
         self.icon = XApp.StatusIcon()
-        self.icon.set_name("dictate")
+        # Must be a valid 4-part name prefixed org.x.StatusIcon, or XApp ignores it and
+        # falls back to "org.x.StatusIcon.<prgname>". For a python script that resolves
+        # to a name Mint's own python-based tray icons already own, and since XApp asks
+        # for it with DO_NOT_QUEUE the loser simply never appears.
+        self.icon.set_name("org.x.StatusIcon.dictate")
         self.icon.connect("activate", toggle)
         # Only a secondary menu. XApp skips "activate" for whichever button has a menu
         # attached, so setting a primary one here would silently kill left-click.

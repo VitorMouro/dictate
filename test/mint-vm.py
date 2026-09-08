@@ -444,6 +444,13 @@ def do_run(keep=False):
         results.append((name, ok, detail))
         log(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' - ' + detail) if detail else ''}")
 
+    # The emulated hda-micro delivers about -37 dBFS at the default level even with
+    # the guest mixer at 100%, which is too quiet for the VAD to latch onto. Real
+    # hardware does not need this; it is a property of the emulated codec.
+    src = guest("pactl get-default-source").stdout.strip()
+    guest(f"pactl set-source-mute {src} 0; pactl set-source-volume {src} 200%")
+    log(f"raised guest capture level on {src}")
+
     log("installing dependencies in the guest")
     guest("sudo apt-get update -qq && sudo apt-get install -y -qq "
           "pulseaudio-utils xdotool sound-theme-freedesktop gir1.2-xapp-1.0 "
