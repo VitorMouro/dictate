@@ -71,6 +71,8 @@ class Tray:
         self.icon = XApp.StatusIcon()
         self.icon.set_name("dictate")
         self.icon.connect("activate", toggle)
+        # Only a secondary menu. XApp skips "activate" for whichever button has a menu
+        # attached, so setting a primary one here would silently kill left-click.
         self.icon.set_secondary_menu(self.build_menu())
 
         RUNTIME.mkdir(parents=True, exist_ok=True)

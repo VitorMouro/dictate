@@ -284,8 +284,11 @@ def do_install():
 ─────────────────────────────────────────────────────────────────────────────
   Installing Mint by hand, once. A QEMU window is opening.
 
-  1. Run the installer on the desktop. Any defaults are fine.
-     Username MUST be: {GUEST_USER}
+  1. Run the installer on the desktop. Any defaults are fine EXCEPT:
+       - Username MUST be: {GUEST_USER}
+       - Tick "Log in automatically". Without it the VM sits at the LightDM
+         greeter, there is no session on :0, and the automated run cannot
+         drive the desktop at all.
   2. Reboot into the installed system when it asks, and log in.
   3. Open a terminal in the VM and run:
 
@@ -331,7 +334,7 @@ def do_run(keep=False):
     log("installing dependencies in the guest")
     guest("sudo apt-get update -qq && sudo apt-get install -y -qq "
           "pulseaudio-utils xdotool sound-theme-freedesktop gir1.2-xapp-1.0 "
-          "python3-gi git curl", timeout=900)
+          "python3-gi git curl bzip2 xterm", timeout=900)
     guest("curl -LsSf https://astral.sh/uv/install.sh | sh", timeout=300)
 
     log("cloning and installing dictate")
@@ -352,17 +355,27 @@ def do_run(keep=False):
     check("status file published", state() == "off", f"state={state()}")
     screenshot("01-idle")
 
+    # The shipped default is 5s, which is fine in use but races the test: arming,
+    # focusing a window and starting playback has to fit inside it. Widen it here so a
+    # slow VM does not read as a failure. The default itself is asserted separately.
+    shipped = guest("grep -c '^idle_timeout = 5.0' ~/dictate/settings.toml").stdout.strip()
+    check("shipped idle_timeout is 5s", shipped == "1", f"grep count={shipped}")
+    guest("sed -i 's/^idle_timeout = .*/idle_timeout = 30.0/' ~/.config/dictate/settings.toml")
+
+    log("opening a window to catch the typed text")
+    guest("rm -f /tmp/typed.txt")
+    guest("nohup xterm -e sh -c 'cat > /tmp/typed.txt' >/dev/null 2>&1 &")
+    time.sleep(3)
+    focused = guest("xdotool search --class XTerm windowactivate --sync "
+                    "&& xdotool getactivewindow getwindowname")
+    check("capture window focused", focused.returncode == 0, focused.stdout.strip())
+
     log("toggling on via the control FIFO")
     guest("sh -c 'F=\"$XDG_RUNTIME_DIR/dictate/control\"; test -p \"$F\" && echo > \"$F\"'")
     ok, seen = wait_state("listening", 20)
     check("toggles to listening", ok, f"seen={seen}")
     screenshot("02-listening")
 
-    log("capturing typed output")
-    guest("pkill -f 'cat > /tmp/typed.txt' ; rm -f /tmp/typed.txt")
-    guest("nohup x-terminal-emulator -e sh -c 'cat > /tmp/typed.txt' "
-          ">/dev/null 2>&1 & sleep 2; xdotool search --name . >/dev/null")
-    time.sleep(3)
     inject()
     ok, seen = wait_state("transcribing", 25)
     check("reaches transcribing", ok, f"seen={seen}")
