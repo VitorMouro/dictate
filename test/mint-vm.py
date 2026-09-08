@@ -18,12 +18,15 @@ Requires on the host: qemu, virglrenderer, espeak-ng, ImageMagick, pipewire-puls
 """
 
 import argparse
+import http.server
 import json
 import os
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
+import threading
 import time
 import wave
 from pathlib import Path
@@ -38,6 +41,7 @@ SHOTS = VMDIR / "shots"
 SAMPLE = VMDIR / "sample.wav"
 
 SSH_PORT = int(os.environ.get("MINT_SSH_PORT", "2222"))
+WEB_PORT = int(os.environ.get("MINT_WEB_PORT", "8123"))
 GUEST_USER = os.environ.get("MINT_USER", "vitor")
 REPO = os.environ.get("DICTATE_REPO", "https://github.com/VitorMouro/dictate")
 SINK = "dictatest"
@@ -269,13 +273,26 @@ def wait_state(want, timeout=30):
     return False, seen
 
 
+def serve_vmdir():
+    """Hands the public key to the guest, which reaches the host loopback at 10.0.2.2
+    under user-mode networking. Typing an ed25519 key into a QEMU window by hand is
+    not a reasonable ask. Bound to loopback so it is not exposed to the network."""
+    handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(
+        *a, directory=str(VMDIR), **kw)
+    socketserver.TCPServer.allow_reuse_address = True
+    httpd = socketserver.TCPServer(("127.0.0.1", WEB_PORT), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    log(f"serving {VMDIR} on 127.0.0.1:{WEB_PORT} (guest sees 10.0.2.2:{WEB_PORT})")
+    return httpd
+
+
 # ----------------------------------------------------------------------- modes ---
 
 def do_install():
     VMDIR.mkdir(parents=True, exist_ok=True)
     if not ISO.exists():
         die(f"ISO not found at {ISO}; set MINT_ISO or download it there")
-    pub = ensure_key()
+    ensure_key()
     if BASE.exists():
         log(f"{BASE} already exists; delete it first to reinstall")
     else:
@@ -297,7 +314,7 @@ def do_install():
 
      sudo apt update && sudo apt install -y openssh-server
      mkdir -p ~/.ssh && chmod 700 ~/.ssh
-     echo '{pub}' >> ~/.ssh/authorized_keys
+     curl -s http://10.0.2.2:{WEB_PORT}/id_vm.pub >> ~/.ssh/authorized_keys
      chmod 600 ~/.ssh/authorized_keys
      echo '{GUEST_USER} ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/99-vmtest
      sudo chmod 440 /etc/sudoers.d/99-vmtest
@@ -310,8 +327,10 @@ def do_install():
   Then: ./mint-vm.py --run
 ─────────────────────────────────────────────────────────────────────────────
 """)
+    httpd = serve_vmdir()
     load_sink()
     launch(BASE, "gtk,gl=on", cdrom=ISO).wait()
+    httpd.shutdown()
     log("installer window closed")
 
 
