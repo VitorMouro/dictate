@@ -321,7 +321,9 @@ def do_run(keep=False):
     make_sample()
     fresh_overlay()
     load_sink()
-    launch(OVERLAY, "none")
+    # egl-headless, not none: virtio-gpu-gl needs a GL-capable display backend, and
+    # this gives it a host GL context with no window so screendump still works.
+    launch(OVERLAY, "egl-headless")
     wait_for_ssh()
     wait_for_cinnamon()
 
