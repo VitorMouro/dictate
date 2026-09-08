@@ -139,7 +139,11 @@ def qemu_args(disk, display, cdrom=None):
         # GL texture and QMP screendump reads the emulated scanout, which stays empty -
         # every screenshot comes back blank. Cinnamon renders fine on plain virtio-gpu.
         "-vga", "none", "-device", "virtio-gpu-pci",
-        "-audiodev", f"pipewire,id=snd0,in.name={SINK}.monitor",
+        # in.name is a PipeWire node name, not a pulse source name. The null sink's
+        # node is called "dictatest"; there is no node "dictatest.monitor", and when
+        # the name does not resolve QEMU silently falls back to the host's DEFAULT
+        # source - handing the guest the real microphone instead of the injected audio.
+        "-audiodev", f"pipewire,id=snd0,in.name={SINK}",
         "-device", "ich9-intel-hda", "-device", "hda-micro,audiodev=snd0",
         "-qmp", f"unix:{QMP_SOCK},server,nowait",
         "-display", display,
@@ -304,6 +308,100 @@ def wait_state(want, timeout=30):
     return False, seen
 
 
+def monitor_index():
+    for line in host(["pactl", "list", "short", "sources"]).stdout.splitlines():
+        if f"{SINK}.monitor" in line:
+            return line.split("\t")[0]
+    return None
+
+
+def qemu_capture_stream():
+    """(source-output id, source index) for qemu's capture stream, or (None, None)."""
+    out = host(["pactl", "list", "source-outputs"]).stdout
+    for block in out.split("Source Output #")[1:]:
+        if "qemu" not in block.lower():
+            continue
+        sid = block.splitlines()[0].strip()
+        line = next((l for l in block.splitlines() if l.strip().startswith("Source:")), "")
+        return sid, line.split(":")[-1].strip()
+    return None, None
+
+
+def ensure_audio_routing(timeout=30):
+    """Point qemu's capture at the null sink and prove it landed.
+
+    QEMU ignores in.name here - the option exists but the node never matches - and it
+    then falls back to the host's DEFAULT source, handing the guest the real microphone.
+    That fails silently: the injected speech never arrives and captures pick up whatever
+    is audible in the room, which reads as wildly inconsistent levels rather than as a
+    routing bug. So move the stream explicitly, then verify.
+    """
+    idx = monitor_index()
+    if idx is None:
+        die(f"null sink monitor {SINK}.monitor is not present on the host")
+
+    deadline = time.time() + timeout
+    sid = None
+    while time.time() < deadline:
+        sid, src = qemu_capture_stream()
+        if sid:
+            break
+        time.sleep(1)
+    if not sid:
+        die("qemu never opened a capture stream; the guest has no microphone")
+
+    if src != idx:
+        host(["pactl", "move-source-output", sid, f"{SINK}.monitor"])
+        time.sleep(1)
+        sid, src = qemu_capture_stream()
+
+    if src != idx:
+        names = {l.split("\t")[0]: l.split("\t")[1]
+                 for l in host(["pactl", "list", "short", "sources"]).stdout.splitlines()
+                 if "\t" in l}
+        die(f"qemu is capturing from source {src} ({names.get(src, '?')}), not "
+            f"{SINK}.monitor ({idx}); the guest would hear the host microphone")
+    log(f"  audio routing verified: qemu -> {SINK}.monitor (source {idx})")
+    return True
+
+
+def guest_peak(src, seconds=14):
+    """Record in the guest while the host injects, and report the loudest sample."""
+    guest("pkill parecord 2>/dev/null; rm -f /tmp/cap.raw")
+    guest(f"nohup timeout {seconds} parecord --raw --rate=16000 --channels=1 "
+          f"--format=s16le --latency-msec=20 --device={src} > /tmp/cap.raw 2>/dev/null "
+          f"& sleep 1")
+    time.sleep(1)
+    inject()
+    time.sleep(1)
+    out = guest("python3 -c \"import struct;d=open('/tmp/cap.raw','rb').read();"
+                "n=len(d)//2;v=struct.unpack(f'<{n}h',d[:n*2]) if n else ();"
+                "print(max((abs(x) for x in v),default=0))\"").stdout.strip()
+    guest("pkill parecord 2>/dev/null; rm -f /tmp/cap.raw")
+    try:
+        return int(out)
+    except ValueError:
+        return 0
+
+
+def calibrate_mic(target=15000):
+    """The emulated hda-micro delivers a wildly inconsistent level: repeated captures of
+    the identical sample at identical mixer settings have measured 805, 5787, 16205 and
+    25516. It is not idle-related - inserting gaps and keeping the host sink awake made
+    no difference. So aim well above what the VAD needs and let the retry loop absorb a
+    bad draw. Real hardware needs none of this."""
+    src = guest("pactl get-default-source").stdout.strip()
+    guest("amixer -c0 sset Capture 100% unmute >/dev/null 2>&1 || true")
+    peak = 0
+    for vol in (200, 300, 400, 500):
+        guest(f"pactl set-source-mute {src} 0; pactl set-source-volume {src} {vol}%")
+        peak = guest_peak(src)
+        log(f"  capture calibration: {vol}% -> peak {peak}")
+        if peak >= target:
+            return True, peak, vol
+    return False, peak, None
+
+
 def serve_vmdir():
     """Hands the public key to the guest, which reaches the host loopback at 10.0.2.2
     under user-mode networking. Typing an ed25519 key into a QEMU window by hand is
@@ -435,6 +533,7 @@ def do_run(keep=False):
     fresh_overlay()
     load_sink()
     launch(OVERLAY, "none")
+    ensure_audio_routing()
     wait_for_ssh()
     wait_for_cinnamon()
 
@@ -443,13 +542,6 @@ def do_run(keep=False):
     def check(name, ok, detail=""):
         results.append((name, ok, detail))
         log(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' - ' + detail) if detail else ''}")
-
-    # The emulated hda-micro delivers about -37 dBFS at the default level even with
-    # the guest mixer at 100%, which is too quiet for the VAD to latch onto. Real
-    # hardware does not need this; it is a property of the emulated codec.
-    src = guest("pactl get-default-source").stdout.strip()
-    guest(f"pactl set-source-mute {src} 0; pactl set-source-volume {src} 200%")
-    log(f"raised guest capture level on {src}")
 
     log("installing dependencies in the guest")
     guest("sudo apt-get update -qq && sudo apt-get install -y -qq "
@@ -473,7 +565,15 @@ def do_run(keep=False):
                     "| grep -m1 '^typing:'").stdout.strip()
     check("typing backend is xdotool", backend == "typing: xdotool", backend)
 
-    check("status file published", state() == "off", f"state={state()}")
+    # Polled: the daemon prints "ready" and publishes on the next statement, so a
+    # single sample can land in between.
+    published = False
+    for _ in range(20):
+        if state() == "off":
+            published = True
+            break
+        time.sleep(0.5)
+    check("status file published", published, f"state={state()}")
     screenshot("01-idle")
 
     # The shipped default is 5s, which is fine in use but races the test: arming,
@@ -482,6 +582,10 @@ def do_run(keep=False):
     shipped = guest("grep -c '^idle_timeout = 5.0' ~/dictate/settings.toml").stdout.strip()
     check("shipped idle_timeout is 5s", shipped == "1", f"grep count={shipped}")
     guest("sed -i 's/^idle_timeout = .*/idle_timeout = 30.0/' ~/.config/dictate/settings.toml")
+
+    ok, peak, vol = calibrate_mic()
+    check("microphone carries the injected speech", ok,
+          f"peak={peak} at {vol}%" if ok else f"best peak={peak}, too quiet for the VAD")
 
     log("opening a window to catch the typed text")
     guest("rm -f /tmp/typed.txt")
@@ -501,17 +605,34 @@ def do_run(keep=False):
     check("toggles to listening", ok, f"seen={seen}")
     screenshot("02-listening")
 
-    inject()
-    ok, seen = wait_state("transcribing", 25)
-    check("reaches transcribing", ok, f"seen={seen}")
+    toggle = ("sh -c 'F=\"$XDG_RUNTIME_DIR/dictate/control\"; "
+              "test -p \"$F\" && echo > \"$F\"'")
+
+    # Assert on the outcome, never on the "transcribing" state: decode runs about
+    # 0.23s for 3s of audio, so that state is gone long before any poll sees it.
+    typed = ""
+    for attempt in range(1, 4):
+        inject()
+        for _ in range(40):
+            typed = guest("cat /tmp/typed.txt 2>/dev/null").stdout.strip()
+            if typed:
+                break
+            time.sleep(0.5)
+        log(f"  injection attempt {attempt}: typed={typed[:60]!r}")
+        if typed:
+            break
+        if state() != "listening":          # it idled out; arm it again
+            guest(toggle)
+            wait_state("listening", 20)
+
+    check("transcribes and types the speech", bool(typed), f"got {typed[:80]!r}")
     screenshot("03-transcribing")
 
-    time.sleep(6)
-    typed = guest("cat /tmp/typed.txt 2>/dev/null").stdout.strip()
     words = set(SENTENCE.split())
-    hit = len(words & set(typed.lower().replace(".", "").split()))
-    check("typed text matches speech", hit >= len(words) - 3,
-          f"{hit}/{len(words)} words, got {typed!r}")
+    got = set(typed.lower().replace(".", "").replace(",", "").split())
+    hit = len(words & got)
+    check("typed text matches the sample", hit >= len(words) - 2,
+          f"{hit}/{len(words)} words matched, got {typed[:80]!r}")
 
     screenshot("04-after")
     guest("systemctl --user stop dictate.service")
