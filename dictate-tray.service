@@ -1,0 +1,16 @@
+[Unit]
+Description=Dictation tray indicator
+PartOf=graphical-session.target
+After=graphical-session.target dictate.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# System python3, not uv: it needs the distro's PyGObject and XApp typelibs, which an
+# isolated venv cannot see.
+ExecStart=/usr/bin/python3 %h/.config/dictate/tray.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

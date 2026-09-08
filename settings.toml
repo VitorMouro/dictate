@@ -1,0 +1,26 @@
+# Dictation daemon tunables. Re-read on every toggle, so edit this and press the keybind
+# again to apply — no restart, the speech model stays loaded.
+
+# VAD sensitivity: the probability above which a 32ms frame counts as speech, 0.0-1.0.
+# LOWER  = more sensitive — picks up quiet or distant speech, and more room noise.
+# HIGHER = stricter. 0.5 is silero's default. Raise it toward 0.7 if room noise keeps
+# producing spurious utterances; lower it if quiet speech gets missed.
+vad_threshold = 0.5
+
+# Silence that ends an utterance. Raise if sentences get chopped while you think.
+min_silence_duration = 0.35
+
+# Utterances shorter than this are dropped. 0.4 silences the room but also eats "no".
+min_speech_duration = 0.25
+
+# Longest single utterance before it is force-ended and transcribed.
+max_speech_duration = 15.0
+
+# Listening turns itself off after this long with no speech detected.
+idle_timeout = 5.0
+
+# Toggle cues, named from the freedesktop sound theme in /usr/share/sounds. The on-cue
+# is played to completion before the mic opens and the off-cue after it closes, so
+# neither ends up in a transcript. Set to "" for a silent toggle.
+sound_on = "device-added"
+sound_off = "device-removed"

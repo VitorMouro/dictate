@@ -1,0 +1,20 @@
+[Unit]
+Description=Dictation daemon (sherpa-onnx + parakeet-tdt)
+PartOf=graphical-session.target
+After=graphical-session.target
+# The model load is seconds; the daemon is resident so the keybind isn't. Restart
+# unconditionally and drop the start limit - five fast restarts is otherwise enough
+# for systemd to give up permanently.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Driven through the script's own shebang rather than an absolute uv path: the astral
+# installer puts uv in ~/.local/bin, distro packages put it in /usr/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.config/dictate/dictate.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# parecord writes a file called "-" if handed that as a filename.
+/-
