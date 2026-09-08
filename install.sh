@@ -20,6 +20,8 @@ need uv       "curl -LsSf https://astral.sh/uv/install.sh | sh"
 need parecord "apt install pulseaudio-utils"
 need paplay   "apt install pulseaudio-utils"
 need pactl    "apt install pulseaudio-utils"
+need curl     "apt install curl"
+need bzip2    "apt install bzip2"
 
 # The daemon picks its typing tool the same way, testing Wayland first: DISPLAY is set
 # under Xwayland too, so keying on it would pick xdotool on a Wayland session.
